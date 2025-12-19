@@ -1,4 +1,15 @@
 {
     "uuid": "abcd1234-1234-1234-1234-1234567890ab",
-    "name": "ArduinoBL"
+    "name": "ArduinoBL",
+    "camera": {
+        "width": 960,
+        "height": 720,
+        "format": "YUV420",
+        "debug": true
+    },
+    "tracking": {
+        "dead_zone": 2,
+        "horizontal_fov": 62,
+        "vertical_fov": 48
+    }
 }

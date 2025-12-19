@@ -3,8 +3,11 @@ from bleak.backends.device import BLEDevice
 import asyncio
 from config import Config
 import logging
+import traceback
 from typing import Callable, Awaitable, Optional
-from messages import ServoCommand, AckMessage
+from messages import ServoCommand, AckMessage, TaskFinishedMessage
+from camera import Camera
+from tracking import calculate_intrinsics, calculate_offset
 
 def init_logging():
     logging.basicConfig(level=logging.INFO,
@@ -24,31 +27,61 @@ def match_device(devices: list[BLEDevice], target_name: str) -> str | None:
     return None
 
 async def run(address: str, callback: Optional[Callable[[BleakClient], Awaitable[None]]] = None):
-    async with BleakClient(address) as client:
-        logging.info(f"Connected to {address}")
-        if callback:
-            await callback(client)
+    try:
+        async with BleakClient(address) as client:
+            logging.info(f"Connected to {address}")
+            if callback:
+                await callback(client)
+    except EOFError:
+        logging.warning("Bluetooth connection lost unexpectedly (EOFError)")
+    except Exception as e:
+        logging.error(f"Connection error: {type(e).__name__}: {str(e)}")
+        raise
 
 '''this function will run loop that will send and receive data from the device, until user interupts the program'''
 async def test_callback(client: BleakClient, cfg: Config):
     try:
-        # counter : int = 0
-        while True:
-            message = ServoCommand(servo1_offset=10, servo2_offset=20).to_json().encode()
-            await client.write_gatt_char(cfg.uuid, message)
-            logging.info(f"Sent: {message.decode()}")
+        # left = True
+        camera = Camera(cfg.camera_width, cfg.camera_height, cfg.camera_format, show_preview=cfg.camera_debug)
+        intrinsics = calculate_intrinsics(cfg)
         
-            value = await client.read_gatt_char(cfg.uuid)
-            ack = AckMessage.from_json(value.decode())
-            logging.info(f"Received: {ack.to_json()}")
-            
-            await asyncio.sleep(0.05)
+        while True:
+            camera.get_frame().get_gray().detect_qr().get_qr_center()
+            if camera.current_destination is not None:
+                h_offset, v_offset = calculate_offset(intrinsics, camera.current_destination, cfg)
+                print(f"Sending command to move to: {h_offset}, {0}")
+                message = ServoCommand(h_offset=int(-h_offset), v_offset=int(-v_offset)).to_json().encode()
+                await client.write_gatt_char(cfg.uuid, message)
+                logging.info(f"Sent: {message.decode()}")
+                value = await client.read_gatt_char(cfg.uuid)
+                ack = AckMessage.from_json(value.decode())
+                logging.info(f"Received: {ack.to_json()}")
+                value = await client.read_gatt_char(cfg.uuid)
+                task_finished = TaskFinishedMessage.from_json(value.decode())
+                logging.info(f"Received Task Finished: {task_finished.to_json()}")
+                camera.current_destination = None
+            await asyncio.sleep(0.5)
+            # if left:
+            #     message = ServoCommand(h_offset=-10, v_offset=10).to_json().encode()
+            # else:
+            #     message = ServoCommand(h_offset=10, v_offset=-10).to_json().encode()
+            # left = not left
+            # await client.write_gatt_char(cfg.uuid, message)
+            # logging.info(f"Sent: {message.decode()}")
+            # value = await client.read_gatt_char(cfg.uuid)
+            # ack = AckMessage.from_json(value.decode())
+            # logging.info(f"Received: {ack.to_json()}")
+            # value = await client.read_gatt_char(cfg.uuid)
+            # task_finished = TaskFinishedMessage.from_json(value.decode())
+            # logging.info(f"Received Task Finished: {task_finished.to_json()}")
+            # await asyncio.sleep(0.1)
             
     except (KeyboardInterrupt, asyncio.CancelledError):
         logging.info("User interrupted the program")
         raise
     except Exception as e:
-        logging.error(f"Error in test callback: {e}")
+        logging.error(f"Error in test callback: {type(e).__name__}: {str(e)}")
+        logging.error(f"Traceback: {traceback.format_exc()}")
         raise
 
 
@@ -68,7 +101,8 @@ async def main():
     except (KeyboardInterrupt, asyncio.CancelledError):
         logging.info("Program interrupted gracefully")
     except Exception as e:
-        logging.error(f"Unexpected error: {e}")
+        logging.error(f"Unexpected error: {type(e).__name__}: {str(e)}")
+        logging.error(f"Traceback: {traceback.format_exc()}")
         raise
 
 if __name__ == "__main__":
@@ -77,5 +111,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         logging.info("Program terminated gracefully")
     except Exception as e:
-        logging.error(f"Fatal error: {e}")
+        logging.error(f"Fatal error: {type(e).__name__}: {str(e)}")
+        logging.error(f"Traceback: {traceback.format_exc()}")
         exit(1)
